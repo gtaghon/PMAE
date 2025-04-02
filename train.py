@@ -37,6 +37,17 @@ def train_pmae(model, data_loader, num_epochs=100, lr=0.001, device='cuda',
         for batch_idx, batch in enumerate(data_loader):
             # Move data to device
             coords = batch['coords'].to(device)
+
+            # NEW: Debug first batch of each epoch
+            if batch_idx == 0 and epoch == 0:
+                print(f"\n=== Debug Batch [{batch_idx}] of Epoch [{epoch}] ===")
+                print(f"Coords shape: {coords.shape}")
+                
+                if 'forces' in batch:
+                    print(f"Forces shape: {batch['forces'].shape}")
+                
+                if 'dssp_one_hot' in batch:
+                    print(f"DSSP shape: {batch['dssp_one_hot'].shape}")
             
             # Optional inputs
             temperature = batch.get('temperature')

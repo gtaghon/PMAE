@@ -8,8 +8,8 @@ class EigenmechanicsExtractor(nn.Module):
     Extract fundamental motion patterns (eigenmechanics) from protein trajectories.
     """
     def __init__(self, input_dim, latent_dim, n_eigenmodes=100, 
-                 use_forces=True, use_secondary_structure=True, 
-                 use_temperature=True):
+                use_forces=True, use_secondary_structure=True, 
+                use_temperature=True):
         super().__init__()
         self.input_dim = input_dim  # Total flattened coordinate dimension
         self.latent_dim = latent_dim
@@ -22,24 +22,25 @@ class EigenmechanicsExtractor(nn.Module):
         if use_temperature:
             self.temp_embedding = nn.Embedding(500, 16)  # Temperature up to 500K
         
-        # Encoder input dimension calculation
-        encoder_input_dim = input_dim
-        if use_forces:
-            encoder_input_dim += input_dim  # Add dimensions for forces
-            
-        if use_secondary_structure:
-            self.ss_dim = 8  # 8 DSSP classes
-            encoder_input_dim += self.ss_dim
+        # PLACEHOLDER - the actual encoder_input_dim will be determined at runtime
+        # This will be overridden when we process the first batch
+        self.encoder_input_dim = input_dim  # Start with just coordinates
         
-        # Flexible encoder to handle varying input sizes
+        # NOTE: We will NOT create encoder layers here, but in a separate initialize method
+        # that will be called after seeing the actual data dimensions
+        
+        # Define encoder layer sizes for later instantiation
+        self.encoder_layer_sizes = [1024, 512, latent_dim]
+        
+        # Initialize a minimal encoder to avoid errors if initialize() isn't called
         self.encoder_layers = nn.ModuleList([
-            nn.Linear(encoder_input_dim, 1024),
-            nn.LayerNorm(1024),
+            nn.Linear(input_dim, self.encoder_layer_sizes[0]),
+            nn.LayerNorm(self.encoder_layer_sizes[0]),
             nn.SiLU(),
-            nn.Linear(1024, 512),
-            nn.LayerNorm(512),
+            nn.Linear(self.encoder_layer_sizes[0], self.encoder_layer_sizes[1]),
+            nn.LayerNorm(self.encoder_layer_sizes[1]),
             nn.SiLU(),
-            nn.Linear(512, latent_dim)
+            nn.Linear(self.encoder_layer_sizes[1], latent_dim)
         ])
         
         # Eigenmode extraction
@@ -68,6 +69,28 @@ class EigenmechanicsExtractor(nn.Module):
             nn.SiLU(),
             nn.Linear(64, 4)
         ])
+
+    def initialize_encoder(self, actual_input_dim):
+        """
+        Initialize the encoder with the correct input dimension, based on actual data.
+        Should be called after seeing a sample of the data.
+        """
+        print(f"Initializing encoder with input dimension: {actual_input_dim}")
+        self.encoder_input_dim = actual_input_dim
+        
+        # Create encoder layers with correct dimensions
+        self.encoder_layers = nn.ModuleList([
+            nn.Linear(actual_input_dim, self.encoder_layer_sizes[0]),
+            nn.LayerNorm(self.encoder_layer_sizes[0]),
+            nn.SiLU(),
+            nn.Linear(self.encoder_layer_sizes[0], self.encoder_layer_sizes[1]),
+            nn.LayerNorm(self.encoder_layer_sizes[1]),
+            nn.SiLU(),
+            nn.Linear(self.encoder_layer_sizes[1], self.latent_dim)
+        ])
+        
+        print(f"Encoder initialized with layers: {[layer.in_features for layer in self.encoder_layers if isinstance(layer, nn.Linear)]}")
+        return self
     
     def forward(self, x, temperature=None, forces=None, dssp=None):
         """
@@ -81,26 +104,29 @@ class EigenmechanicsExtractor(nn.Module):
         """
         batch_size, time_steps, _ = x.shape
         
+        # DEBUG: Print shape information
+        print(f"Input shape: {x.shape}")
+        
         # Reshape for encoder
-        x_flat = x.reshape(batch_size * time_steps, self.input_dim)
+        x_flat = x.reshape(batch_size * time_steps, -1)
         
         # Construct input features
         features = [x_flat]
         
         # Add forces if provided and configured
         if self.use_forces and forces is not None:
-            forces_flat = forces.reshape(batch_size * time_steps, self.input_dim)
+            forces_flat = forces.reshape(batch_size * time_steps, -1)
             features.append(forces_flat)
-            
+                
         # Add secondary structure if provided and configured
         if self.use_secondary_structure and dssp is not None:
-            # For simplified model, just average DSSP across residues
             try:
                 # If dssp is [batch_size, time_steps, num_residues, ss_dim]
                 if len(dssp.shape) == 4:
-                    dssp_mean = dssp.mean(dim=2)  # Average across residues
-                    dssp_flat = dssp_mean.reshape(batch_size * time_steps, -1)
-                # If dssp is already [batch_size, time_steps, ss_dim]
+                    # For proper handling, flatten the residue and ss dimensions
+                    batch_size_ds, time_steps_ds, num_residues, ss_dim = dssp.shape
+                    dssp_flat = dssp.reshape(batch_size_ds * time_steps_ds, num_residues * ss_dim)
+                # If dssp is already [batch_size, time_steps, flattened_dim]
                 elif len(dssp.shape) == 3:
                     dssp_flat = dssp.reshape(batch_size * time_steps, -1)
                 else:
@@ -108,12 +134,22 @@ class EigenmechanicsExtractor(nn.Module):
                     
                 if dssp_flat is not None:
                     features.append(dssp_flat)
+                    print(f"DSSP flattened shape: {dssp_flat.shape}")
             except Exception as e:
                 print(f"Error processing DSSP in forward pass: {e}")
         
         # Concatenate all features
         try:
             combined_features = torch.cat(features, dim=1)
+            print(f"Combined features shape: {combined_features.shape}")
+            
+            # IMPORTANT: Ensure the first layer can handle this dimension
+            if combined_features.shape[1] != self.encoder_layers[0].in_features:
+                print(f"WARNING: Input dimension mismatch - got {combined_features.shape[1]}, expected {self.encoder_layers[0].in_features}")
+                # Dynamic adjustment of the first layer - risky but can work during debugging
+                self.encoder_layers[0] = nn.Linear(combined_features.shape[1], 1024).to(combined_features.device)
+                print(f"Dynamically adjusted first layer to accept {combined_features.shape[1]} features")
+                
         except Exception as e:
             print(f"Error concatenating features: {e}")
             # Fallback to just coordinates

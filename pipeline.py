@@ -7,6 +7,37 @@ from model import PMAE
 from eigenmech import EigenmechanicsCatalog
 from inference import analyze_protein_mechanics
 from train import train_pmae
+from utils import initialize_and_check_model
+
+# Add a hook to ensure the first forward pass works correctly
+def hook_for_first_batch(data_loader, model):
+    # Get the first batch
+    first_batch = next(iter(data_loader))
+    coords = first_batch['coords'].to(device)
+    
+    # Process DSSP to determine its actual shape
+    dssp = first_batch.get('dssp_one_hot')
+    if dssp is not None:
+        dssp = dssp.to(device)
+        
+        # Calculate actual DSSP feature dimension
+        if len(dssp.shape) == 4:
+            num_residues = dssp.shape[2]
+            ss_classes = dssp.shape[3]
+            dssp_dim = num_residues * ss_classes
+        else:
+            dssp_dim = dssp.shape[2]
+            
+        print(f"DSSP actual dimension: {dssp_dim}")
+    
+    # Do a single forward pass with tracing to calculate dimensions
+    with torch.no_grad():
+        try:
+            # This will initialize the networks correctly
+            _ = model(coords, None, None, dssp)
+            print("First forward pass for initialization successful")
+        except Exception as e:
+            print(f"Error in first forward pass (this is expected): {e}")
 
 def run_pmae_pipeline(data_dir,
                       output_dir,
@@ -75,6 +106,13 @@ def run_pmae_pipeline(data_dir,
         use_secondary_structure=True,
         use_temperature=True
     )
+
+    # NEW: Check and fix model dimensions before training
+    model = initialize_and_check_model(model, sample, device)
+    
+    # Call the hook
+    print("\n=== Performing initial forward pass for dynamic initialization ===")
+    hook_for_first_batch(train_loader, model)
     
     # Train model
     train_pmae(

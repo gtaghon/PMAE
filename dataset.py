@@ -104,19 +104,30 @@ class MdCATHDataset(Dataset):
                 coords = f[domain_id][temp][replica]['coords'][selected_frames]
                 coords = coords / 10.0  # Convert from Å to nm
                 
-                # Handle padding/truncation for atoms
+                # IMPORTANT FIX: Handle proper reshaping for atom coordinates
+                # First check if coords are already in the shape [frames, atoms, 3]
+                if len(coords.shape) == 3 and coords.shape[2] == 3:
+                    # Already in the correct format
+                    pass
+                elif len(coords.shape) == 2:
+                    # Reshape from [frames, atoms*3] to [frames, atoms, 3]
+                    num_atoms = coords.shape[1] // 3
+                    coords = coords.reshape(coords.shape[0], num_atoms, 3)
+                
+                # Now handle padding/truncation for atoms with proper 3D structure
                 num_atoms = traj_info['num_atoms']
                 if self.pad_or_truncate and self.max_atoms:
-                    # Coords shape is (frames, atom_coords*3) where atom_coords is the flattened 3D coordinates
-                    # We need to truncate/pad the second dimension
-                    if num_atoms*3 > self.max_atoms*3:
-                        # Truncate to max_atoms*3
-                        coords = coords[:, :self.max_atoms*3]
-                    elif num_atoms*3 < self.max_atoms*3:
+                    if num_atoms > self.max_atoms:
+                        # Truncate to max_atoms
+                        coords = coords[:, :self.max_atoms, :]
+                    elif num_atoms < self.max_atoms:
                         # Pad with zeros - create a new array with the right shape
-                        padded_coords = np.zeros((coords.shape[0], self.max_atoms*3), dtype=coords.dtype)
-                        padded_coords[:, :coords.shape[1]] = coords
+                        padded_coords = np.zeros((coords.shape[0], self.max_atoms, 3), dtype=coords.dtype)
+                        padded_coords[:, :num_atoms, :] = coords
                         coords = padded_coords
+                
+                # Finally, reshape to the expected format for the model: [frames, atoms*3]
+                coords = coords.reshape(coords.shape[0], -1)
                 
                 # Load forces if requested
                 forces = None
